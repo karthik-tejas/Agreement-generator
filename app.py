@@ -19,57 +19,85 @@ from agreement_generator.models import DocumentParseError
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-CUSTOM_CSS = """
+def _build_custom_css(is_dark: bool) -> str:
+    """Build the app's custom CSS, adapted to the active Streamlit theme.
+
+    Streamlit already themes its own native text elements (headings,
+    paragraphs, captions) correctly for both light and dark mode, so this
+    intentionally avoids overriding their color with fixed hex values —
+    doing so previously caused hardcoded dark-gray text to render on top of
+    Streamlit's dark background, making it nearly unreadable. Only the
+    colors of elements *we* render via raw HTML (title/subtitle/cards/
+    captions) are set explicitly here, with a palette chosen per theme.
+    """
+    palette = (
+        {
+            "title": "#f9fafb",
+            "subtitle": "#9ca3af",
+            "card_bg": "#1f2937",
+            "card_border": "#374151",
+            "caption": "#9ca3af",
+            "disclaimer": "#9ca3af",
+        }
+        if is_dark
+        else {
+            "title": "#111827",
+            "subtitle": "#6b7280",
+            "card_bg": "#f9fafb",
+            "card_border": "#e5e7eb",
+            "caption": "#6b7280",
+            "disclaimer": "#9ca3af",
+        }
+    )
+    return f"""
 <style>
-.block-container {
+.block-container {{
     max-width: 960px;
     padding-top: 2.5rem;
     padding-bottom: 3rem;
-}
-h1 { font-weight: 700; color: #111827; }
-h2, h3 { color: #1f2937; }
-.app-title {
+}}
+h1 {{ font-weight: 700; }}
+.app-title {{
     text-align: center;
     font-weight: 700;
-    color: #111827;
-}
-.app-subtitle {
+    color: {palette["title"]};
+}}
+.app-subtitle {{
     text-align: center;
-    color: #6b7280;
+    color: {palette["subtitle"]};
     margin-top: -0.6rem;
-}
-p, li, span { color: #374151; }
-div[data-testid="stExpander"] {
-    border: 1px solid #e5e7eb;
+}}
+div[data-testid="stExpander"] {{
+    border: 1px solid {palette["card_border"]};
     border-radius: 10px;
     margin-bottom: 0.6rem;
-}
-div[data-testid="stFileUploaderDropzone"] {
+}}
+div[data-testid="stFileUploaderDropzone"] {{
     border-radius: 10px;
-}
-.stButton > button, .stDownloadButton > button {
+}}
+.stButton > button, .stDownloadButton > button {{
     border-radius: 8px;
     font-weight: 600;
-}
-.upload-card {
-    background: #f9fafb;
-    border: 1px solid #e5e7eb;
+}}
+.upload-card {{
+    background: {palette["card_bg"]};
+    border: 1px solid {palette["card_border"]};
     border-radius: 12px;
     padding: 1.1rem 1.2rem 0.6rem;
     height: 100%;
-}
-.section-caption {
-    color: #6b7280;
+}}
+.section-caption {{
+    color: {palette["caption"]};
     font-size: 0.9rem;
     margin-top: -0.4rem;
-}
-.disclaimer {
-    color: #9ca3af;
+}}
+.disclaimer {{
+    color: {palette["disclaimer"]};
     font-size: 0.8rem;
-}
-@media (max-width: 640px) {
-    .block-container { padding-left: 1rem; padding-right: 1rem; }
-}
+}}
+@media (max-width: 640px) {{
+    .block-container {{ padding-left: 1rem; padding-right: 1rem; }}
+}}
 </style>
 """
 
@@ -328,7 +356,11 @@ def _render_debug_panel(debug: dict) -> None:
 
 def main() -> None:
     st.set_page_config(page_title="Agreement Generator", page_icon="📄", layout="centered")
-    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+    try:
+        is_dark = st.context.theme.type == "dark"
+    except Exception:
+        is_dark = False
+    st.markdown(_build_custom_css(is_dark), unsafe_allow_html=True)
     _init_state()
 
     st.markdown(
