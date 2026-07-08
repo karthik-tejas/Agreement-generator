@@ -10,7 +10,7 @@ still work.
 from __future__ import annotations
 
 import re
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 from docx import Document
 from docx.document import Document as DocumentObject
@@ -32,7 +32,7 @@ _SECTION_WORD_PATTERN = re.compile(
     r"^(?:section|article|clause|part|annex(?:ure)?)\s+[\dIVXLC]+\.?\s*[:\-]?\s*(.+)$",
     re.I,
 )
-_NUMBERED_PATTERN = re.compile(r"^\d+(?:\.\d+)*[\.)]\s+(.+)$")
+_NUMBERED_PATTERN = re.compile(r"^(\d+(?:\.\d+)*)[\.)]\s+(.+)$")
 _ALL_CAPS_PATTERN = re.compile(r"^[A-Z][A-Z0-9\s&/\-,\.]{3,}$")
 
 _MAX_FALLBACK_HEADING_WORDS = 12
@@ -102,9 +102,11 @@ def _classify_paragraph(paragraph: Paragraph) -> tuple[bool, int, str]:
         if word_count <= _MAX_NUMBERED_HEADING_WORDS and not text.rstrip().endswith("."):
             match = _NUMBERED_PATTERN.match(text)
             if match:
-                heading_text = match.group(1).strip()
+                heading_text = match.group(2).strip()
                 if heading_text:
-                    return True, 1, heading_text
+                    # "3." -> level 1, "3.1" -> level 2, "3.1.2" -> level 3, …
+                    level = match.group(1).count(".") + 1
+                    return True, level, heading_text
 
         if _ALL_CAPS_PATTERN.match(text):
             return True, 1, text
@@ -147,41 +149,65 @@ def load_document(file_obj: BinaryIO, *, source_name: str = "document") -> Docum
 def extract_sections(document: DocumentObject, *, source_name: str = "document") -> list[DocSection]:
     """Walk an already-opened `Document` into an ordered list of `DocSection`.
 
+    Section boundaries are only drawn at the document's *coarsest* detected
+    heading level (e.g. "Heading 1", or top-level "1."/"2." numbering) — this
+    is what gets matched against the other document. Any finer-grained
+    sub-headings (e.g. "Heading 2"/"3.1 …") are **not** split into their own
+    sections; they and their content are kept as part of the enclosing
+    top-level section's body, so all of a section's real content (including
+    its subsections) travels together when it's matched and copied over.
+    Previously every heading, regardless of level, started a new top-level
+    section — this silently fragmented hierarchical TORs/templates so most
+    of their content never matched anything and was dropped.
+
     Raises `DocumentParseError` if no section headings can be detected.
     """
-    sections: list[DocSection] = []
-    current: DocSection | None = None
-
+    # First pass: classify every paragraph/table without building sections
+    # yet, so we can determine the document's coarsest heading level first.
+    entries: list[tuple[Any, bool, int, str, Paragraph | None]] = []
     for child in document.element.body.iterchildren():
         tag = child.tag
         if tag == qn("w:p"):
             paragraph = Paragraph(child, document)
             is_heading, level, heading_text = _classify_paragraph(paragraph)
-            if is_heading:
+            entries.append((child, is_heading, level, heading_text, paragraph))
+        elif tag == qn("w:tbl"):
+            entries.append((child, False, 0, "", None))
+        # Other elements (sectPr, etc.) are ignored for section purposes.
+
+    heading_levels = [level for _, is_heading, level, _, _ in entries if is_heading]
+    if not heading_levels:
+        raise DocumentParseError(
+            f"Could not detect any section headings in '{source_name}'. Use Word "
+            "heading styles (Heading 1/2/…) or numbered section titles "
+            "(e.g. '1. Scope of Work')."
+        )
+    top_level = min(heading_levels)
+
+    sections: list[DocSection] = []
+    current: DocSection | None = None
+
+    for child, is_heading, level, heading_text, paragraph in entries:
+        if paragraph is not None:  # a w:p entry
+            if is_heading and level <= top_level:
                 current = DocSection(heading=heading_text, level=level, heading_element=child)
                 sections.append(current)
                 continue
             if current is None:
                 continue
+            # Sub-headings below the top level fall through to here and are
+            # kept as regular body content, preserving their own formatting.
             current.body_elements.append(child)
             text = paragraph.text
             if text.strip():
                 current.body_text += ("\n" if current.body_text else "") + text
-        elif tag == qn("w:tbl"):
+        else:  # a w:tbl entry
             if current is None:
                 continue
             current.body_elements.append(child)
             table_text = _table_text(Table(child, document))
             if table_text:
                 current.body_text += ("\n" if current.body_text else "") + table_text
-        # Other elements (sectPr, etc.) are ignored for section purposes.
-
-    if not sections:
-        raise DocumentParseError(
-            f"Could not detect any section headings in '{source_name}'. Use Word "
-            "heading styles (Heading 1/2/…) or numbered section titles "
-            "(e.g. '1. Scope of Work')."
-        )
 
     return sections
 
